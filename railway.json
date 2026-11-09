@@ -1,0 +1,7 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "deploy": {
+    "startCommand": "python server.py --sync-hours 6",
+    "restartPolicyType": "ON_FAILURE"
+  }
+}
