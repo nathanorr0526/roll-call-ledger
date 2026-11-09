@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Roll Call Ledger</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="theme-color" content="#18202e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Roll Call">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a clerk's ledger. Sticky masthead, one reading column, tallies set in mono like a printed roll call. */
+:root {
+  --paper: #f6f7f9; --card: #ffffff; --ink: #18202e; --muted: #5b6577; --rule: #dde1e8;
+  --accent: #8a6a1f;          /* brass, the color of a gavel band */
+  --yes: #1d7a5c; --no: #b0532a; --nv: #8b93a1;
+  --dem: #2f5d9e; --rep: #b23a3a; --ind: #6b5b95;
+  --display: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+  --body: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --paper: #11151c; --card: #181e28; --ink: #e7eaf0; --muted: #9aa3b2; --rule: #2a3240;
+  --accent: #d4ad55; --yes: #4cbf93; --no: #e08a5f; --nv: #6f7887;
+  --dem: #6f9be0; --rep: #e57373; --ind: #a99ad6; color-scheme: dark;
+} }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--body); padding-bottom: env(safe-area-inset-bottom, 0px); }
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header { position: sticky; top: 0; z-index: 5; background: var(--ink); color: var(--paper);
+  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px)); }
+.mast { max-width: 960px; margin: 0 auto; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.mast h1 { font: 800 20px/1.1 var(--display); letter-spacing: -0.01em; margin: 0; }
+.mast h1 span { color: var(--accent); }
+.mast .meta { font: 12px var(--mono); opacity: .7; }
+nav { max-width: 960px; margin: 8px auto 0; display: flex; gap: 4px; }
+nav a { text-decoration: none; padding: 8px 12px; font-weight: 600; font-size: 14px; border-bottom: 3px solid transparent; opacity: .75; }
+nav a[aria-current="page"] { border-color: var(--accent); opacity: 1; }
+
+main { max-width: 960px; margin: 0 auto; padding-block: 20px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.filters input { flex: 1 1 220px; min-width: 0; }
+input, select { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 9px 11px; }
+.btn { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 12px; cursor: pointer; font-weight: 500; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+.list { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 12px 14px; border-top: 1px solid var(--rule); text-decoration: none; align-items: center; }
+.row:first-child { border-top: 0; }
+a.row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.row .main { min-width: 0; }
+.row .title { font-weight: 600; }
+.row .sub { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; white-space: nowrap; }
+
+.party { display: inline-block; min-width: 22px; text-align: center; font: 600 11px/18px var(--mono); border-radius: 3px; color: #fff; padding: 0 4px; margin-right: 6px; vertical-align: 1px; }
+.party.D { background: var(--dem); } .party.R { background: var(--rep); } .party.I, .party.ID { background: var(--ind); }
+
+.pos { font: 500 12px var(--mono); padding: 2px 7px; border-radius: 3px; border: 1px solid currentColor; white-space: nowrap; }
+.pos.yes { color: var(--yes); } .pos.no { color: var(--no); } .pos.not_voting, .pos.present, .pos.other { color: var(--nv); }
+.flag { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; }
+
+.head { margin: 4px 0 18px; }
+.head h2 { font: 800 clamp(22px, 5vw, 32px)/1.15 var(--display); letter-spacing: -0.015em; margin: 0 0 4px; text-wrap: balance; }
+.head p { margin: 0; color: var(--muted); }
+.back { display: inline-block; margin-bottom: 10px; font-size: 13px; color: var(--muted); text-decoration: none; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+.stat { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; }
+.stat b { display: block; font: 500 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+
+.tally { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--rule); margin: 8px 0 4px; }
+.tally i { display: block; } .tally .y { background: var(--yes); } .tally .n { background: var(--no); } .tally .o { background: var(--nv); }
+.tally-row { display: grid; grid-template-columns: 60px 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+
+h3 { font: 600 12px var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 24px 0 8px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--card); }
+.seg button { border: 0; background: none; padding: 8px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+.more { display: block; margin: 12px auto 0; }
+.compare-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+@media (max-width: 520px) { .compare-pick { grid-template-columns: 1fr; } }
+.big { font: 500 clamp(40px, 10vw, 64px)/1 var(--mono); color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { .row { transition: background .12s; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="mast"><h1>Roll Call <span>Ledger</span></h1><div class="meta" id="meta">Loading…</div></div>
+  <nav>
+    <a href="#members" data-tab="members">Members</a>
+    <a href="#votes" data-tab="votes">Votes</a>
+    <a href="#compare" data-tab="compare">Compare</a>
+  </nav>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+
+<script>
+const app = document.getElementById("app");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = async (path) => { const r = await fetch("/api/" + path); if (!r.ok) throw new Error((await r.json()).error || r.statusText); return r.json(); };
+const fmtDate = d => d ? new Date(d + "T12:00:00").toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"}) : "";
+const POS = {yes: "Yes", no: "No", not_voting: "Missed", present: "Present", other: "Other"};
+const party = p => `<span class="party ${esc(p)}">${esc(p || "?")}</span>`;
+const seat = m => m.chamber === "senate" ? `Senator, ${m.state}` : `Rep., ${m.state}${m.district != null && m.district !== "" ? "-" + (m.district === "0" ? "AL" : m.district) : ""}`;
+const voteTitle = v => esc(v.description || v.question || "Roll call " + v.number);
+let members = null;
+
+async function loadMembers() { if (!members) members = await api("members"); return members; }
+
+function setTab(tab) {
+  document.querySelectorAll("nav a").forEach(a => a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
+}
+
+// ---------- Members
+async function viewMembers() {
+  setTab("members");
+  app.innerHTML = `<div class="filters">
+      <input id="mq" type="search" placeholder="Search by name or state (TX, CA…)" aria-label="Search members">
+      <select id="mch" aria-label="Chamber"><option value="">Both chambers</option><option value="senate">Senate</option><option value="house">House</option></select>
+      <select id="mpa" aria-label="Party"><option value="">All parties</option><option>D</option><option>R</option><option>I</option></select>
+    </div><div class="list" id="mlist"><div class="empty">Loading members…</div></div>`;
+  const all = await loadMembers();
+  const draw = () => {
+    const q = mq.value.trim().toLowerCase(), ch = mch.value, pa = mpa.value;
+    const list = all.filter(m => (!ch || m.chamber === ch) && (!pa || m.party === pa) &&
+      (!q || m.name.toLowerCase().includes(q) || (m.state || "").toLowerCase() === q));
+    mlist.innerHTML = list.length ? list.slice(0, 600).map(m => `
+      <a class="row" href="#m/${encodeURIComponent(m.id)}">
+        <div class="main"><div class="title">${party(m.party)}${esc(m.name)}</div><div class="sub">${esc(seat(m))}</div></div>
+        <div class="num">${m.votes.toLocaleString()} votes<br><span style="color:var(--muted)">${m.votes ? (100 * m.missed / m.votes).toFixed(1) : 0}% missed</span></div>
+      </a>`).join("") : `<div class="empty">No members match. ${all.length ? "" : "Votes are still downloading. Check back in a few minutes."}</div>`;
+  };
+  mq.oninput = mch.onchange = mpa.onchange = draw; draw();
+}
+
+// ---------- Member detail
+async function viewMember(id) {
+  setTab("members");
+  app.innerHTML = `<div class="empty">Loading…</div>`;
+  const m = await api("members/" + encodeURIComponent(id));
+  const s = m.stats, c = s.counts;
+  app.innerHTML = `<a class="back" href="#members">← All members</a>
+    <div class="head"><h2>${esc(m.name)}</h2><p>${party(m.party)}${esc(seat(m))}</p></div>
+    <div class="stats">
+      <div class="stat"><b>${s.total.toLocaleString()}</b><span>Roll calls</span></div>
+      <div class="stat"><b style="color:var(--yes)">${(c.yes || 0).toLocaleString()}</b><span>Yes</span></div>
+      <div class="stat"><b style="color:var(--no)">${(c.no || 0).toLocaleString()}</b><span>No</span></div>
+      <div class="stat"><b>${s.missed_pct ?? "—"}%</b><span>Missed</span></div>
+      <div class="stat"><b>${s.party_unity_pct ?? "—"}${s.party_unity_pct != null ? "%" : ""}</b><span>Votes with party</span></div>
+    </div>
+    <div class="filters">
+      <input id="vq" type="search" placeholder="Search this member's votes (bill, topic…)" aria-label="Search votes">
+      <div class="seg" role="group" aria-label="Filter">
+        <button data-f="" aria-pressed="true">All</button><button data-f="yes">Yes</button><button data-f="no">No</button>
+        <button data-f="not_voting">Missed</button><button data-f="against">Broke with party</button>
+      </div>
+      <a class="btn" href="#compare/${encodeURIComponent(m.id)}">Compare…</a>
+    </div>
+    <div class="list" id="vlist"></div><button class="btn more" id="more" hidden>Show more</button>`;
+  let filter = "", offset = 0;
+  const load = async (reset) => {
+    if (reset) { offset = 0; vlist.innerHTML = `<div class="empty">Loading…</div>`; }
+    const p = new URLSearchParams({limit: 50, offset});
+    if (vq.value.trim()) p.set("q", vq.value.trim());
+    if (filter === "against") p.set("against_party", 1); else if (filter) p.set("position", filter);
+    const list = await api(`members/${encodeURIComponent(id)}/votes?${p}`);
+    const html = list.map(v => `<a class="row" href="#v/${encodeURIComponent(v.id)}">
+        <div class="main"><div class="title">${voteTitle(v)}</div>
+        <div class="sub">${fmtDate(v.date)} · ${esc(v.bill || "")} ${esc(v.question || "")} · ${esc(v.result || "")}
+        ${v.with_party === 0 ? ' · <span class="flag">Broke with party</span>' : ""}</div></div>
+        <span class="pos ${v.position}" title="${esc(v.raw)}">${POS[v.position] || esc(v.raw)}</span></a>`).join("");
+    if (reset) vlist.innerHTML = html || `<div class="empty">No votes match.</div>`; else vlist.insertAdjacentHTML("beforeend", html);
+    offset += list.length; more.hidden = list.length < 50;
+  };
+  document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+    document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b)); filter = b.dataset.f; load(true); });
+  let t; vq.oninput = () => { clearTimeout(t); t = setTimeout(() => load(true), 250); };
+  more.onclick = () => load(false);
+  load(true);
+}
+
+// ---------- Votes
+async function viewVotes() {
+  setTab("votes");
+  app.innerHTML = `<div class="filters">
+      <input id="q" type="search" placeholder="Search bills, nominations, amendments…" aria-label="Search votes">
+      <select id="ch" aria-label="Chamber"><option value="">Both chambers</option><option value="senate">Senate</option><option value="house">House</option></select>
+    </div><div class="list" id="list"></div><button class="btn more" id="more" hidden>Show more</button>`;
+  let offset = 0;
+  const load = async (reset) => {
+    if (reset) { offset = 0; list.innerHTML = `<div class="empty">Loading…</div>`; }
+    const p = new URLSearchParams({limit: 50, offset}); if (q.value.trim()) p.set("q", q.value.trim()); if (ch.value) p.set("chamber", ch.value);
+    const rows = await api("votes?" + p);
+    const html = rows.map(v => `<a class="row" href="#v/${encodeURIComponent(v.id)}">
+      <div class="main"><div class="title">${voteTitle(v)}</div>
+      <div class="sub">${v.chamber === "senate" ? "Senate" : "House"} #${v.number} · ${fmtDate(v.date)} · ${esc(v.bill || v.question || "")} · ${esc(v.result || "")}</div></div>
+      <div class="num"><span style="color:var(--yes)">${v.yes}</span>–<span style="color:var(--no)">${v.no}</span></div></a>`).join("");
+    if (reset) list.innerHTML = html || `<div class="empty">Votes are still downloading. Check back in a few minutes.</div>`; else list.insertAdjacentHTML("beforeend", html);
+    offset += rows.length; more.hidden = rows.length < 50;
+  };
+  let t; q.oninput = () => { clearTimeout(t); t = setTimeout(() => load(true), 250); };
+  ch.onchange = () => load(true); more.onclick = () => load(false);
+  load(true);
+}
+
+// ---------- Vote detail
+async function viewVote(id) {
+  setTab("votes");
+  app.innerHTML = `<div class="empty">Loading…</div>`;
+  const v = await api("votes/" + encodeURIComponent(id));
+  const tally = (y, n, o) => { const t = y + n + o || 1; return `<div class="tally"><i class="y" style="width:${100*y/t}%"></i><i class="n" style="width:${100*n/t}%"></i><i class="o" style="width:${100*o/t}%"></i></div>`; };
+  const tot = v.by_party.reduce((a, p) => ({y: a.y + p.yes, n: a.n + p.no, o: a.o + p.other}), {y: 0, n: 0, o: 0});
+  app.innerHTML = `<a class="back" href="#votes">← All votes</a>
+    <div class="head"><h2>${voteTitle(v)}</h2>
+    <p>${v.chamber === "senate" ? "Senate" : "House"} roll call #${v.number} · ${fmtDate(v.date)} · ${esc(v.bill)} ${esc(v.question)}</p>
+    <p><b>${esc(v.result)}</b> · <span class="num"><span style="color:var(--yes)">${tot.y} yes</span> · <span style="color:var(--no)">${tot.n} no</span> · ${tot.o} other</span>
+    ${v.source_url ? ` · <a href="${esc(v.source_url)}" target="_blank" rel="noopener">Official record</a>` : ""}</p></div>
+    <h3>By party</h3>
+    ${v.by_party.map(p => `<div class="tally-row">${party(p.party)}${tally(p.yes, p.no, p.other)}<span class="num">${p.yes}–${p.no}${p.other ? ` (${p.other})` : ""}</span></div>`).join("")}
+    <h3>Every member</h3>
+    <div class="filters"><input id="fq" type="search" placeholder="Filter by name or state" aria-label="Filter members"></div>
+    <div class="list" id="plist"></div>`;
+  const draw = () => { const q = fq.value.trim().toLowerCase();
+    plist.innerHTML = v.positions.filter(p => !q || (p.name || "").toLowerCase().includes(q) || (p.state || "").toLowerCase() === q)
+      .map(p => `<a class="row" href="#m/${encodeURIComponent(p.member_id)}"><div class="main"><div class="title">${party(p.party)}${esc(p.name || p.member_id)}</div><div class="sub">${esc(p.state)}</div></div>
+      <span class="pos ${p.position}" title="${esc(p.raw)}">${p.position === "other" ? esc(p.raw) : POS[p.position]}</span></a>`).join("") || `<div class="empty">No match.</div>`; };
+  fq.oninput = draw; draw();
+}
+
+// ---------- Compare
+async function viewCompare(a, b) {
+  setTab("compare");
+  const all = await loadMembers();
+  const opts = sel => `<option value="">Choose a member…</option>` + all.slice().sort((x, y) => x.name.localeCompare(y.name))
+    .map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)} (${esc(m.party)}-${esc(m.state)}, ${m.chamber === "senate" ? "Sen" : "Rep"})</option>`).join("");
+  app.innerHTML = `<div class="head"><h2>How often do two members agree?</h2><p>Counts roll calls where both voted yes or no.</p></div>
+    <div class="compare-pick"><select id="ca" aria-label="First member">${opts(a)}</select><select id="cb" aria-label="Second member">${opts(b)}</select></div>
+    <div id="cres"></div>`;
+  const go = () => { if (ca.value && cb.value) location.hash = `compare/${encodeURIComponent(ca.value)}/${encodeURIComponent(cb.value)}`; };
+  ca.onchange = cb.onchange = go;
+  if (!(a && b)) return;
+  const r = await api(`compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  cres.innerHTML = r.shared ? `
+    <div class="stat" style="margin-bottom:16px"><div class="big">${r.agree_pct}%</div>
+      <span>Agreed on ${r.agree.toLocaleString()} of ${r.shared.toLocaleString()} shared votes</span></div>
+    <h3>Most recent disagreements</h3>
+    <div class="list">${r.disagreements.map(v => `<a class="row" href="#v/${encodeURIComponent(v.id)}">
+      <div class="main"><div class="title">${voteTitle(v)}</div><div class="sub">${fmtDate(v.date)} · ${esc(r.a.last_name || r.a.name)}: ${POS[v.a_pos]} · ${esc(r.b.last_name || r.b.name)}: ${POS[v.b_pos]}</div></div></a>`).join("") || `<div class="empty">They never disagreed.</div>`}</div>`
+    : `<div class="empty">These two haven't cast yes/no votes on the same roll call. House and Senate members only overlap on joint sessions.</div>`;
+}
+
+// ---------- Router
+async function route() {
+  const h = decodeURIComponent(location.hash.slice(1)), [p, x, y] = h.split("/");
+  try {
+    if (p === "m" && x) await viewMember(x);
+    else if (p === "v" && x) await viewVote(x);
+    else if (p === "votes") await viewVotes();
+    else if (p === "compare") await viewCompare(x, y);
+    else await viewMembers();
+  } catch (e) { app.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  window.scrollTo(0, 0);
+}
+addEventListener("hashchange", route);
+api("summary").then(s => {
+  const n = (s.house.n || 0) + (s.senate.n || 0);
+  meta.textContent = n ? `${s.congress}th Congress · ${n.toLocaleString()} roll calls · updated through ${fmtDate([s.house.last, s.senate.last].filter(Boolean).sort().pop())}` : "No data yet";
+}).catch(() => meta.textContent = "Server not reachable");
+route();
+</script>
+</body>
+</html>
