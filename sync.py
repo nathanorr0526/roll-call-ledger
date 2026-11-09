@@ -7,6 +7,8 @@ Sources (all official / public, no API key needed):
   * House:    https://clerk.house.gov/evs/{year}/roll{NNN}.xml
   * Senate:   https://www.senate.gov/legislative/LIS/roll_call_lists/vote_menu_{congress}_{session}.xml
               https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{NNNNN}.xml
+  * Topics:   https://api.congress.gov/v3/bill/{congress}/{type}/{number}[/subjects]
+              (optional; needs a free key from https://api.congress.gov/sign-up/ in CONGRESS_API_KEY)
 
 Usage:
   python sync.py                    # current Congress, both chambers, only new votes
@@ -20,6 +22,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -35,6 +38,7 @@ LEGISLATORS_URLS = [
     "https://unitedstates.github.io/congress-legislators/legislators-current.json",
     "https://unitedstates.github.io/congress-legislators/legislators-historical.json",
 ]
+CONGRESS_API_KEY = os.environ.get("CONGRESS_API_KEY", "").strip()
 DELAY = float(os.environ.get("VOTES_DELAY", "0.25"))  # seconds between requests, be polite
 
 SCHEMA = """
@@ -75,6 +79,17 @@ CREATE TABLE IF NOT EXISTS positions (
   PRIMARY KEY (vote_id, member_id)
 );
 CREATE INDEX IF NOT EXISTS positions_member ON positions(member_id);
+
+CREATE TABLE IF NOT EXISTS bills (
+  congress    INTEGER NOT NULL,
+  type        TEXT NOT NULL,            -- hr, s, hres, sres, hjres, sjres, hconres, sconres
+  number      INTEGER NOT NULL,
+  title       TEXT,
+  policy_area TEXT,                     -- Congress.gov's one broad topic, e.g. 'Immigration', 'Health'
+  subjects    TEXT,                     -- detailed subject terms joined with '|'
+  fetched_at  TEXT,
+  PRIMARY KEY (congress, type, number)
+);
 """
 
 NORMALIZE = {
@@ -83,6 +98,15 @@ NORMALIZE = {
     "present": "present",
     "not voting": "not_voting",
 }
+
+
+BILL_RE = re.compile(r"^(hconres|hjres|hres|hr|sconres|sjres|sres|s)(\d+)$")
+
+
+def parse_bill(label):
+    """'H R 23', 'H.R. 23', 'S.J.Res. 12' -> ('hr', 23). Nominations, quorum calls etc. -> (None, None)."""
+    m = BILL_RE.match(re.sub(r"[^a-z0-9]", "", (label or "").lower()))
+    return (m.group(1), int(m.group(2))) if m else (None, None)
 
 
 def normalize(raw):
@@ -340,9 +364,12 @@ def sync_senate(db, congress, refresh):
 # ---------------------------------------------------------------- store
 
 def store(db, vote, positions):
+    vote["bill_type"], vote["bill_number"] = parse_bill(vote["bill"])
     db.execute(
-        """INSERT OR REPLACE INTO votes(id, chamber, congress, session, number, date, question, description, bill, result, source_url)
-           VALUES(:id, :chamber, :congress, :session, :number, :date, :question, :description, :bill, :result, :source_url)""",
+        """INSERT OR REPLACE INTO votes(id, chamber, congress, session, number, date, question, description, bill, result,
+                                         source_url, bill_type, bill_number)
+           VALUES(:id, :chamber, :congress, :session, :number, :date, :question, :description, :bill, :result,
+                  :source_url, :bill_type, :bill_number)""",
         vote,
     )
     db.execute("DELETE FROM positions WHERE vote_id = ?", (vote["id"],))
@@ -378,9 +405,84 @@ def rebuild_stats(db):
 
 
 def connect(path=DB_PATH):
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=30)
     db.executescript(SCHEMA)
+    migrate(db)
     return db
+
+
+def migrate(db):
+    """Bring databases made by older versions up to date."""
+    cols = {r[1] for r in db.execute("PRAGMA table_info(votes)")}
+    if "bill_type" not in cols:
+        db.execute("ALTER TABLE votes ADD COLUMN bill_type TEXT")
+        db.execute("ALTER TABLE votes ADD COLUMN bill_number INTEGER")
+        for vid, label in db.execute("SELECT id, bill FROM votes").fetchall():
+            t, n = parse_bill(label)
+            if t:
+                db.execute("UPDATE votes SET bill_type = ?, bill_number = ? WHERE id = ?", (t, n, vid))
+    db.execute("CREATE INDEX IF NOT EXISTS votes_bill ON votes(congress, bill_type, bill_number)")
+    db.commit()
+
+
+# ---------------------------------------------------------------- bill topics (Congress.gov)
+
+def congress_api(path):
+    url = f"https://api.congress.gov/v3/{path}?format=json&limit=250"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "X-Api-Key": CONGRESS_API_KEY,
+                                               "Accept": "application/json"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read())
+            time.sleep(DELAY)
+            return data
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            if e.code in (401, 403):
+                raise RuntimeError("Congress.gov rejected the API key. Check CONGRESS_API_KEY.") from e
+            if e.code == 429:
+                raise RuntimeError("Congress.gov hourly limit reached; the rest will be fetched next sync.") from e
+            if attempt == 2:
+                raise
+        except urllib.error.URLError:
+            if attempt == 2:
+                raise
+        time.sleep(2 * (attempt + 1))
+
+
+def sync_bills(db):
+    """Fetch title, policy area and subjects for every bill that has a recorded vote."""
+    if not CONGRESS_API_KEY:
+        log("topics: skipped (set CONGRESS_API_KEY to tag votes with topics)")
+        return
+    week_ago = (dt.datetime.utcnow() - dt.timedelta(days=7)).isoformat()
+    todo = db.execute("""
+        SELECT DISTINCT v.congress, v.bill_type, v.bill_number
+        FROM votes v LEFT JOIN bills b ON b.congress = v.congress AND b.type = v.bill_type AND b.number = v.bill_number
+        WHERE v.bill_type IS NOT NULL
+          AND (b.congress IS NULL OR (COALESCE(b.subjects, '') = '' AND b.fetched_at < ?))""", (week_ago,)).fetchall()
+    done = 0
+    for congress, btype, number in todo:
+        try:
+            detail = congress_api(f"bill/{congress}/{btype}/{number}") or {}
+            subj = congress_api(f"bill/{congress}/{btype}/{number}/subjects") or {}
+        except RuntimeError as e:
+            log("topics:", e)
+            break
+        bill = detail.get("bill") or {}
+        s = subj.get("subjects") or {}
+        area = ((bill.get("policyArea") or {}).get("name") or (s.get("policyArea") or {}).get("name") or "")
+        subjects = "|".join(x.get("name", "") for x in (s.get("legislativeSubjects") or []) if x.get("name"))
+        db.execute("""INSERT OR REPLACE INTO bills(congress, type, number, title, policy_area, subjects, fetched_at)
+                      VALUES(?,?,?,?,?,?,?)""",
+                   (congress, btype, number, bill.get("title"), area, subjects, dt.datetime.utcnow().isoformat()))
+        db.commit()
+        done += 1
+        if done % 50 == 0:
+            log(f"  topics: {done}/{len(todo)} bills")
+    log(f"topics: {done} bills tagged")
 
 
 def current_congress(today=None):
@@ -410,6 +512,7 @@ def main():
         sync_senate(db, args.congress, args.refresh)
     fill_missing_members(db)
     rebuild_stats(db)
+    sync_bills(db)
     total = db.execute("SELECT COUNT(*) FROM votes").fetchone()[0]
     log(f"done. {total} roll calls in database.")
 

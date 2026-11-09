@@ -14,6 +14,8 @@ API
   GET /api/votes?chamber=&q=&limit=&offset=
   GET /api/votes/<id>
   GET /api/compare?a=<id>&b=<id>
+  GET /api/topics                         policy areas with counts
+  GET /api/topic?q=guns&member=<id>       bills on a topic, their votes, and (optionally) one member's positions
 """
 import argparse
 import json
@@ -177,6 +179,96 @@ def compare(c, a, b):
     }
 
 
+# ---------------------------------------------------------------- topics
+
+# Everyday words -> the official Congress.gov terms they should also match.
+SYNONYMS = {
+    "gun": ["firearms"], "guns": ["firearms"], "gun control": ["firearms"], "second amendment": ["firearms"],
+    "healthcare": ["health"], "health care": ["health"], "healthcare reform": ["health", "health care coverage and access"],
+    "medicare": ["medicare"], "medicaid": ["medicaid"], "obamacare": ["health care coverage", "health insurance"],
+    "abortion": ["abortion"], "immigration": ["immigration"], "border": ["border security", "immigration"],
+    "climate": ["climate change", "environmental protection"], "environment": ["environmental protection"],
+    "taxes": ["taxation"], "tax": ["taxation"], "military": ["armed forces", "defense"], "defense": ["armed forces and national security"],
+    "veterans": ["veterans"], "education": ["education"], "energy": ["energy"], "police": ["law enforcement"],
+    "crime": ["crime and law enforcement"], "budget": ["economics and public finance", "budget"],
+    "spending": ["appropriations", "economics and public finance"], "farm": ["agriculture"], "farming": ["agriculture"],
+    "social security": ["social security"], "voting": ["elections"], "elections": ["elections"],
+    "housing": ["housing and community development"], "trade": ["foreign trade"], "ukraine": ["ukraine"],
+    "israel": ["israel"], "china": ["china"], "ai": ["artificial intelligence"], "privacy": ["right of privacy"],
+}
+
+
+def ordinal(n):
+    return f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+def topic_terms(q):
+    q = q.strip().lower()
+    terms = {q} if len(q) >= 3 or q not in SYNONYMS else set()
+    for key, extra in SYNONYMS.items():
+        if key == q or (len(key) > 3 and key in q):
+            terms.update(extra)
+    return sorted(terms)
+
+
+def topics(c):
+    areas = rows(c.execute("""
+        SELECT b.policy_area AS name, COUNT(DISTINCT b.congress || b.type || b.number) AS bills, COUNT(v.id) AS votes
+        FROM bills b JOIN votes v ON v.congress = b.congress AND v.bill_type = b.type AND v.bill_number = b.number
+        WHERE COALESCE(b.policy_area, '') <> '' GROUP BY b.policy_area ORDER BY votes DESC"""))
+    tagged = c.execute("SELECT COUNT(*) FROM bills").fetchone()[0]
+    return {"areas": areas, "tagged_bills": tagged}
+
+
+BILL_SLUG = {"hr": "house-bill", "s": "senate-bill", "hres": "house-resolution", "sres": "senate-resolution",
+             "hjres": "house-joint-resolution", "sjres": "senate-joint-resolution",
+             "hconres": "house-concurrent-resolution", "sconres": "senate-concurrent-resolution"}
+BILL_LABEL = {"hr": "H.R.", "s": "S.", "hres": "H.Res.", "sres": "S.Res.", "hjres": "H.J.Res.", "sjres": "S.J.Res.",
+              "hconres": "H.Con.Res.", "sconres": "S.Con.Res."}
+
+
+def topic_search(c, q):
+    where, args = [], []
+    if q.get("area"):
+        where.append("b.policy_area = ?"); args.append(q["area"])
+    if q.get("q"):
+        ors = []
+        for t in topic_terms(q["q"]):
+            ors.append("(LOWER(b.policy_area) LIKE ? OR LOWER(b.subjects) LIKE ? OR LOWER(b.title) LIKE ? OR LOWER(v.description) LIKE ?)")
+            args += [f"%{t}%"] * 4
+        where.append("(" + " OR ".join(ors) + ")")
+    if not where:
+        return {"bills": [], "terms": []}
+    member = q.get("member") or ""
+    found = rows(c.execute(f"""
+        SELECT v.id, v.date, v.chamber, v.number, v.question, v.description, v.result,
+               v.congress, v.bill_type, v.bill_number, v.bill,
+               b.title, b.policy_area, b.subjects,
+               (SELECT COUNT(*) FROM positions p WHERE p.vote_id = v.id AND p.position = 'yes') AS yes,
+               (SELECT COUNT(*) FROM positions p WHERE p.vote_id = v.id AND p.position = 'no')  AS no,
+               mp.position AS member_position, mp.raw AS member_raw
+        FROM votes v
+        LEFT JOIN bills b ON b.congress = v.congress AND b.type = v.bill_type AND b.number = v.bill_number
+        LEFT JOIN positions mp ON mp.vote_id = v.id AND mp.member_id = ?
+        WHERE v.bill_type IS NOT NULL AND {' AND '.join(where)}
+        ORDER BY v.date DESC, v.number DESC LIMIT 600""", [member] + args))
+    bills, order = {}, []
+    for r in found:
+        key = f"{r['congress']}-{r['bill_type']}-{r['bill_number']}"
+        if key not in bills:
+            order.append(key)
+            bills[key] = {
+                "key": key, "label": f"{BILL_LABEL.get(r['bill_type'], r['bill_type'])} {r['bill_number']}",
+                "title": r["title"] or r["description"] or r["bill"], "policy_area": r["policy_area"],
+                "subjects": [x for x in (r["subjects"] or "").split("|") if x][:12],
+                "url": f"https://www.congress.gov/bill/{ordinal(r['congress'])}-congress/{BILL_SLUG.get(r['bill_type'], '')}/{r['bill_number']}",
+                "votes": [],
+            }
+        bills[key]["votes"].append({k: r[k] for k in ("id", "date", "chamber", "number", "question", "result",
+                                                      "yes", "no", "member_position", "member_raw")})
+    return {"bills": [bills[k] for k in order], "terms": topic_terms(q.get("q", "")) if q.get("q") else []}
+
+
 # ---------------------------------------------------------------- http
 
 class Handler(SimpleHTTPRequestHandler):
@@ -217,6 +309,10 @@ class Handler(SimpleHTTPRequestHandler):
             if len(parts) == 2 and parts[0] == "votes":
                 v = vote_detail(c, parts[1])
                 return self.send_json(v) if v else self.send_json({"error": "Vote not found"}, 404)
+            if parts == ["topics"]:
+                return self.send_json(topics(c))
+            if parts == ["topic"]:
+                return self.send_json(topic_search(c, q))
             if parts == ["compare"] and q.get("a") and q.get("b"):
                 return self.send_json(compare(c, q["a"], q["b"]))
             return self.send_json({"error": "Unknown endpoint"}, 404)
