@@ -7,6 +7,8 @@ Sources (all official / public, no API key needed):
   * House:    https://clerk.house.gov/evs/{year}/roll{NNN}.xml
   * Senate:   https://www.senate.gov/legislative/LIS/roll_call_lists/vote_menu_{congress}_{session}.xml
               https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/vote_{congress}_{session}_{NNNNN}.xml
+  * Senate backup: Voteview (UCLA), https://voteview.com/static/data/out/{votes,rollcalls,members}/S{congress}_*.csv
+              used automatically when senate.gov refuses the request (it often blocks cloud servers)
   * Topics:   https://api.congress.gov/v3/bill/{congress}/{type}/{number}[/subjects]
               (optional; needs a free key from https://api.congress.gov/sign-up/ in CONGRESS_API_KEY)
 
@@ -19,6 +21,8 @@ Usage:
 Standard library only. Safe to run repeatedly (e.g. hourly from cron).
 """
 import argparse
+import csv
+import io
 import datetime as dt
 import json
 import os
@@ -337,9 +341,9 @@ def sync_senate(db, congress, refresh):
     for session in (1, 2):
         try:
             numbers = senate_vote_numbers(congress, session)
-        except urllib.error.HTTPError as e:
-            log(f"! senate.gov refused the vote list ({e.code}). Try setting VOTES_USER_AGENT to a browser-like string.")
-            return
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            log(f"senate.gov refused the request ({getattr(e, 'code', e)}); using Voteview instead")
+            return sync_senate_voteview(db, congress, refresh)
         if not numbers:
             continue
         have = {r[0] for r in db.execute("SELECT number FROM votes WHERE chamber='senate' AND congress=? AND session=?", (congress, session))}
@@ -348,7 +352,11 @@ def sync_senate(db, congress, refresh):
         for i, n in enumerate(todo, 1):
             url = (f"https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/"
                    f"vote_{congress}_{session}_{n:05d}.xml")
-            data = fetch(url)
+            try:
+                data = fetch(url)
+            except (urllib.error.HTTPError, urllib.error.URLError) as e:
+                log(f"senate.gov refused vote {n} ({getattr(e, 'code', e)}); using Voteview instead")
+                return sync_senate_voteview(db, congress, refresh)
             if not looks_like_xml(data):
                 log(f"  ! senate vote {n} unavailable")
                 continue
@@ -359,6 +367,73 @@ def sync_senate(db, congress, refresh):
             if i % 25 == 0:
                 log(f"  senate {congress}-{session}: {i}/{len(todo)}")
         log(f"senate {congress}-{session}: {len(todo)} roll calls fetched ({len(numbers)} total)")
+
+
+VOTEVIEW_PARTY = {"100": "D", "200": "R"}  # everything else (328 = Independent, etc.) shows as I
+VOTEVIEW_CAST = {"1": "Yea", "2": "Yea", "3": "Yea", "4": "Nay", "5": "Nay", "6": "Nay",
+                 "7": "Present", "8": "Present", "9": "Not Voting"}
+
+
+def voteview_csv(kind, congress):
+    url = f"https://voteview.com/static/data/out/{kind}/S{congress}_{kind}.csv"
+    data = fetch(url)
+    if not data:
+        raise RuntimeError(f"Voteview file not found: {url}")
+    return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+
+
+def sync_senate_voteview(db, congress, refresh):
+    """Senate votes from Voteview's per-Congress files (usually a day or two behind senate.gov)."""
+    try:
+        members = voteview_csv("members", congress)
+        rollcalls = voteview_csv("rollcalls", congress)
+        votes = voteview_csv("votes", congress)
+    except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError) as e:
+        log(f"! Voteview unavailable: {e}")
+        return
+    people = {}
+    for m in members:
+        if m.get("chamber") != "Senate" or not m.get("bioguide_id"):
+            continue
+        name = m.get("bioname", "")
+        if "," in name:  # 'SCHUMER, Charles Ellis' -> 'Charles Ellis Schumer'
+            last, first = [x.strip() for x in name.split(",", 1)]
+            name = f"{first} {last.title()}"
+        people[m["icpsr"]] = {"id": m["bioguide_id"], "name": name, "last": name.split()[-1] if name else "",
+                              "party": VOTEVIEW_PARTY.get(m.get("party_code"), "I"), "state": m.get("state_abbrev")}
+    by_roll = {}
+    for v in votes:
+        if v.get("chamber") == "Senate":
+            by_roll.setdefault(v["rollnumber"], []).append(v)
+    have = {r[0] for r in db.execute("SELECT id FROM votes WHERE chamber='senate' AND congress=?", (congress,))}
+    calls = [r for r in rollcalls if r.get("chamber") == "Senate"]
+    calls.sort(key=lambda r: int(r["rollnumber"]))
+    redo = {r["rollnumber"] for r in calls[-refresh:]} if refresh else set()
+    added = 0
+    for r in calls:
+        session = int(r.get("session") or (1 if int(r["date"][:4]) % 2 == 1 else 2))
+        number = int(r.get("clerk_rollnumber") or r["rollnumber"])
+        vid = f"s-{congress}-{session}-{number}"
+        if vid in have and r["rollnumber"] not in redo:
+            continue
+        vote = {
+            "id": vid, "chamber": "senate", "congress": congress, "session": session, "number": number,
+            "date": r.get("date", ""), "question": r.get("vote_question", ""),
+            "description": r.get("vote_desc") or r.get("dtl_desc", ""), "bill": r.get("bill_number", ""),
+            "result": r.get("vote_result", ""),
+            "source_url": (f"https://www.senate.gov/legislative/LIS/roll_call_votes/vote{congress}{session}/"
+                           f"vote_{congress}_{session}_{number:05d}.htm"),
+        }
+        positions = []
+        for v in by_roll.get(r["rollnumber"], []):
+            who, raw = people.get(v["icpsr"]), VOTEVIEW_CAST.get(v.get("cast_code", "0"))
+            if not who or not raw:
+                continue
+            positions.append({"member_id": who["id"], "name": who["name"], "last_name": who["last"],
+                              "party": who["party"], "state": who["state"], "raw": raw})
+        store(db, vote, positions)
+        added += 1
+    log(f"senate {congress} (Voteview): {added} roll calls fetched ({len(calls)} total)")
 
 
 # ---------------------------------------------------------------- store
@@ -457,7 +532,7 @@ def sync_bills(db):
     if not CONGRESS_API_KEY:
         log("topics: skipped (set CONGRESS_API_KEY to tag votes with topics)")
         return
-    week_ago = (dt.datetime.utcnow() - dt.timedelta(days=7)).isoformat()
+    week_ago = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(days=7)).isoformat()
     todo = db.execute("""
         SELECT DISTINCT v.congress, v.bill_type, v.bill_number
         FROM votes v LEFT JOIN bills b ON b.congress = v.congress AND b.type = v.bill_type AND b.number = v.bill_number
@@ -477,7 +552,7 @@ def sync_bills(db):
         subjects = "|".join(x.get("name", "") for x in (s.get("legislativeSubjects") or []) if x.get("name"))
         db.execute("""INSERT OR REPLACE INTO bills(congress, type, number, title, policy_area, subjects, fetched_at)
                       VALUES(?,?,?,?,?,?,?)""",
-                   (congress, btype, number, bill.get("title"), area, subjects, dt.datetime.utcnow().isoformat()))
+                   (congress, btype, number, bill.get("title"), area, subjects, dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat()))
         db.commit()
         done += 1
         if done % 50 == 0:
